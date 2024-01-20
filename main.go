@@ -3,15 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/go-chi/chi"
-	"github.com/go-chi/chi/middleware"
-	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
@@ -51,24 +47,10 @@ func init() {
 	defer logger.Sync()
 }
 
-func loadConfig() {
-	err := godotenv.Load("config.env")
-	if err != nil {
-		logger.Fatal("Error loading .env file", zap.Error(err))
-	}
-
-	batchSize = getEnvAsInt("BATCH_SIZE", 10)
-	batchInterval = time.Duration(getEnvAsInt("BATCH_INTERVAL", 60)) * time.Second
-	postEndpoint = getEnv("POST_ENDPOINT", "http://localhost:8080/log_data")
-}
-
 func main() {
 	r := chi.NewRouter()
 
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+	setupMiddleware(r)
 
 	r.Get("/healthz", healthzHandler)
 	r.Post("/log", logHandler)
@@ -76,6 +58,12 @@ func main() {
 
 	logger.Info("Webhook receiver started")
 
+	startBatchSender()
+
+	http.ListenAndServe(":8080", r)
+}
+
+func startBatchSender() {
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
 
@@ -94,40 +82,8 @@ func main() {
 					payloads = make([]Payload, 0, batchSize)
 				}
 			}
-
 		}
 	}()
-
-	http.ListenAndServe(":8080", r)
-}
-
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("OK"))
-}
-
-func logHandler(w http.ResponseWriter, r *http.Request) {
-	var payload Payload
-	body, err := io.ReadAll(r.Body)
-
-	//logger.Info("Request Body", zap.String("body", string(body)))
-
-	err = json.Unmarshal(body, &payload)
-	if err != nil {
-		logger.Error("Failed to decode JSON payload", zap.Error(err))
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	// Store the payload in-memory
-	payloads = append(payloads, payload)
-
-	w.Write([]byte("OK"))
-	logger.Info("Step1", zap.Int("BatchSize", len(payloads)))
-}
-
-func sendBatchHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Data Received"))
-	logger.Info("Batch Received Successfully")
 }
 
 func sendBatch(payloads []Payload) {
@@ -166,19 +122,4 @@ func retryBatch(payloads []Payload) {
 	}
 	logger.Error("Failed to send batch after 3 attempts, exiting application")
 	os.Exit(1)
-}
-
-func getEnv(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return defaultValue
-}
-
-func getEnvAsInt(key string, defaultValue int) int {
-	valueStr := getEnv(key, "")
-	if value, err := strconv.Atoi(valueStr); err == nil {
-		return value
-	}
-	return defaultValue
 }
