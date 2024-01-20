@@ -72,13 +72,13 @@ func startBatchSender() {
 			select {
 			case <-ticker.C:
 				logger.Info("Step2: Interval Reached", zap.Int("BatchSize", len(payloads)))
-				sendBatch(payloads)
+				sendBatch(payloads, 0)
 				payloads = make([]Payload, 0, batchSize)
 
 			case <-time.After(0): // Non-blocking check
 				if len(payloads) >= batchSize {
 					logger.Info("Step2: Batch Size Reached", zap.Int("BatchSize", len(payloads)))
-					sendBatch(payloads)
+					sendBatch(payloads, 0)
 					payloads = make([]Payload, 0, batchSize)
 				}
 			}
@@ -86,7 +86,7 @@ func startBatchSender() {
 	}()
 }
 
-func sendBatch(payloads []Payload) {
+func sendBatch(payloads []Payload, retryCount int) {
 	if len(payloads) == 0 {
 		return
 	}
@@ -108,18 +108,18 @@ func sendBatch(payloads []Payload) {
 	)
 
 	if resp.StatusCode != http.StatusOK {
-		// Retry logic
-		retryBatch(payloads)
+		retryBatch(payloads, retryCount+1)
 	}
-
 }
 
-func retryBatch(payloads []Payload) {
-	for i := 0; i < 3; i++ {
-		time.Sleep(2 * time.Second)
-		logger.Info("Retrying batch", zap.Int("RetryAttempt", i+1))
-		sendBatch(payloads)
+func retryBatch(payloads []Payload, retryCount int) {
+	time.Sleep(2)
+	logger.Info("Retrying batch", zap.Int("RetryAttempt", retryCount))
+
+	if retryCount >= 3 {
+		logger.Error("Failed to send batch after 3 attempts, exiting application")
+		os.Exit(1)
 	}
-	logger.Error("Failed to send batch after 3 attempts, exiting application")
-	os.Exit(1)
+	sendBatch(payloads, retryCount)
+
 }

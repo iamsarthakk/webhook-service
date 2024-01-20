@@ -1,22 +1,33 @@
-# Use the official Go image as the base image
-FROM golang:1.21
+# Use the official Go image for building
+FROM golang:1.21-alpine AS builder
 
-# Set the working directory inside the container
+# Set the working directory
 WORKDIR /app
 
-# Copy the necessary files into the container
+# Copy Go modules manifests and build the application
+COPY go.* ./
+RUN go mod download
+
+# Copy the local files to the container's working directory
 COPY . .
 
-# Build the Go application
-RUN go build -o webhook-receiver
+# Build the application
+RUN go build -o webhook-service
 
-# Expose the port that the application will run on
+# Create a minimal image
+FROM alpine:3.14
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the binary from the builder image
+COPY --from=builder /app/webhook-service /app/webhook-service
+
+# Copy the .env file
+COPY config.env /app/config.env
+
+# Expose port 8080
 EXPOSE 8080
 
-# Set environment variables (adjust as needed)
-ENV BATCH_SIZE=10
-ENV BATCH_INTERVAL=60
-ENV POST_ENDPOINT=http://localhost:8080/log
-
-# Command to run the application
-CMD ["./webhook-receiver"]
+# Run the application
+CMD ["/app/webhook-service"]
