@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
@@ -43,12 +45,21 @@ var (
 )
 
 func init() {
-	batchSize = getEnvAsInt("BATCH_SIZE", 10)
-	batchInterval = time.Duration(getEnvAsInt("BATCH_INTERVAL", 60)) * time.Second
-	postEndpoint = getEnv("POST_ENDPOINT", "http://localhost:8080/log")
+	loadConfig()
 
 	logger, _ = zap.NewProduction()
 	defer logger.Sync()
+}
+
+func loadConfig() {
+	err := godotenv.Load("config.env")
+	if err != nil {
+		logger.Fatal("Error loading .env file", zap.Error(err))
+	}
+
+	batchSize = getEnvAsInt("BATCH_SIZE", 10)
+	batchInterval = time.Duration(getEnvAsInt("BATCH_INTERVAL", 60)) * time.Second
+	postEndpoint = getEnv("POST_ENDPOINT", "http://localhost:8080/log_data")
 }
 
 func main() {
@@ -61,21 +72,29 @@ func main() {
 
 	r.Get("/healthz", healthzHandler)
 	r.Post("/log", logHandler)
+	r.Post("/send-data", sendBatchHandler)
 
 	logger.Info("Webhook receiver started")
 
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
 
-	payloads := make([]Payload, 0, batchSize)
-
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
+				logger.Info("Step2: Interval Reached", zap.Int("BatchSize", len(payloads)))
 				sendBatch(payloads)
 				payloads = make([]Payload, 0, batchSize)
+
+			case <-time.After(0): // Non-blocking check
+				if len(payloads) >= batchSize {
+					logger.Info("Step2: Batch Size Reached", zap.Int("BatchSize", len(payloads)))
+					sendBatch(payloads)
+					payloads = make([]Payload, 0, batchSize)
+				}
 			}
+
 		}
 	}()
 
@@ -88,8 +107,11 @@ func healthzHandler(w http.ResponseWriter, r *http.Request) {
 
 func logHandler(w http.ResponseWriter, r *http.Request) {
 	var payload Payload
+	body, err := io.ReadAll(r.Body)
 
-	err := json.NewDecoder(r.Body).Decode(&payload)
+	//logger.Info("Request Body", zap.String("body", string(body)))
+
+	err = json.Unmarshal(body, &payload)
 	if err != nil {
 		logger.Error("Failed to decode JSON payload", zap.Error(err))
 		w.WriteHeader(http.StatusBadRequest)
@@ -100,6 +122,12 @@ func logHandler(w http.ResponseWriter, r *http.Request) {
 	payloads = append(payloads, payload)
 
 	w.Write([]byte("OK"))
+	logger.Info("Step1", zap.Int("BatchSize", len(payloads)))
+}
+
+func sendBatchHandler(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("Data Received"))
+	logger.Info("Batch Received Successfully")
 }
 
 func sendBatch(payloads []Payload) {
@@ -127,6 +155,7 @@ func sendBatch(payloads []Payload) {
 		// Retry logic
 		retryBatch(payloads)
 	}
+
 }
 
 func retryBatch(payloads []Payload) {
